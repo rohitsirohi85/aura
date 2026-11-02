@@ -1,0 +1,11 @@
+Model Information:
+* title:	Makima (Chainsaw Man) Realistic 3D Model
+* source:	https://sketchfab.com/3d-models/makima-chainsaw-man-realistic-3d-model-5c9916182c23449b9de6678a21c60545
+* author:	Wim Reyes (https://sketchfab.com/wimreyes)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Makima (Chainsaw Man) Realistic 3D Model" (https://sketchfab.com/3d-models/makima-chainsaw-man-realistic-3d-model-5c9916182c23449b9de6678a21c60545) by Wim Reyes (https://sketchfab.com/wimreyes) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

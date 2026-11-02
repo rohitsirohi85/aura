@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 112px; background: transparent; font-family: Manrope, Inter, Segoe UI, sans-serif; color: #fff3e5; }
+    .shell { min-height: 102px; padding: 11px 13px; display: flex; align-items: center; gap: 14px; border: 1px solid rgba(255,151,102,.26); border-radius: 5px; background: linear-gradient(115deg, rgba(55,30,24,.96), rgba(37,24,25,.95)); transition: border-color .2s, box-shadow .2s; }
+    .shell.recording { border-color: rgba(255,126,75,.8); box-shadow: 0 0 28px rgba(255,89,48,.14), inset 0 0 24px rgba(255,90,48,.07); }
+    button { display: flex; align-items: center; gap: 9px; border: 1px solid rgba(255,170,125,.46); border-radius: 4px; padding: 12px 15px; color: #fff7ee; font: 800 12px Manrope, Inter, Segoe UI, sans-serif; white-space: nowrap; cursor: pointer; background: linear-gradient(120deg,#b63b25,#f36c3d); transition: .18s ease; text-transform: uppercase; letter-spacing: .04em; }
+    button:hover { transform: translateY(-1px); border-color: #ffd0ad; }
+    button:disabled { opacity: .72; cursor: wait; transform: none; }
+    .mic { display: grid; place-items: center; width: 21px; height: 21px; border: 1.5px solid #ffb17d; border-radius: 50%; color: #ffd4b4; font-size: 12px; }
+    .recording button { background: linear-gradient(120deg,#7e251e,#c4442b); border-color: #ff9b76; }
+    .recording .mic { background: #ffb39a; border-color: #ffb39a; color: #612019; box-shadow: 0 0 0 5px rgba(255,113,137,.13), 0 0 18px rgba(255,113,137,.55); animation: pulse 1s ease-in-out infinite; }
+    @keyframes pulse { 50% { box-shadow: 0 0 0 9px rgba(255,113,137,.04), 0 0 22px rgba(255,113,137,.7); } }
+    .copy { min-width: 0; flex: 1; }
+    .title { font-size: 12px; font-weight: 800; letter-spacing: .015em; }
+    .status { margin-top: 4px; color: #c5a99a; font-size: 11px; line-height: 1.4; }
+    .meter { height: 20px; display: flex; align-items: center; gap: 3px; opacity: .18; transition: opacity .2s; }
+    .meter i { display: block; width: 3px; height: 5px; border-radius: 4px; background: #ff8251; }
+    .recording .meter { opacity: 1; }
+    .recording .meter i { animation: bars .52s ease-in-out infinite alternate; }
+    .recording .meter i:nth-child(2n) { animation-delay: .16s; }.recording .meter i:nth-child(3n) { animation-delay: .29s; }
+    @keyframes bars { to { height: 19px; } }
+    @media(max-width:560px) { .shell { flex-wrap: wrap; gap: 9px; } .copy { min-width: 100%; padding-left: 3px; } .meter { position:absolute; right:24px; top:15px; } }
+  </style>
+</head>
+<body>
+  <div class="shell" id="shell">
+    <button id="record" type="button" aria-pressed="false"><span class="mic">●</span><span id="buttonText">Start recording</span></button>
+    <div class="copy"><div class="title">Speech to text · on this device</div><div class="status" id="status">Press Start, talk as long as you need, then press Stop to transcribe locally.</div></div>
+    <div class="meter" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+  </div>
+  <script>
+    const shell = document.getElementById('shell');
+    const button = document.getElementById('record');
+    const buttonText = document.getElementById('buttonText');
+    const statusLine = document.getElementById('status');
+    let recorder = null;
+    let micStream = null;
+    let chunks = [];
+    let timer = null;
+    let startedAt = 0;
+    let finishing = false;
+
+    function postValue(value) {
+      window.parent.postMessage({
+        isStreamlitMessage: true,
+        type: 'streamlit:setComponentValue',
+        value,
+        dataType: 'json'
+      }, '*');
+    }
+
+    function ready() {
+      window.parent.postMessage({ isStreamlitMessage: true, type: 'streamlit:componentReady', apiVersion: 1 }, '*');
+      window.parent.postMessage({ isStreamlitMessage: true, type: 'streamlit:setFrameHeight', height: 112 }, '*');
+    }
+
+    function setState(state) {
+      const recording = state === 'recording';
+      shell.classList.toggle('recording', recording);
+      button.disabled = state === 'starting' || state === 'stopping';
+      button.setAttribute('aria-pressed', String(recording || state === 'stopping'));
+      buttonText.textContent = state === 'starting' ? 'Opening mic…'
+        : state === 'stopping' ? 'Transcribing…'
+        : recording ? 'Stop & transcribe' : 'Start recording';
+    }
+
+    function releaseMic() {
+      if (timer) window.clearInterval(timer);
+      timer = null;
+      if (micStream) micStream.getTracks().forEach(track => track.stop());
+      micStream = null;
+      recorder = null;
+    }
+
+    function finishBlob(blob) {
+      releaseMic();
+      if (!blob || blob.size < 900) {
+        setState('idle');
+        statusLine.textContent = 'No audio was captured. Try again or type your message.';
+        return;
+      }
+      statusLine.textContent = 'Audio captured · transcribing with the local Whisper model…';
+      const reader = new FileReader();
+      reader.onerror = () => {
+        setState('idle');
+        statusLine.textContent = 'Could not prepare the recording. Please try again.';
+      };
+      reader.onloadend = () => {
+        const dataUrl = String(reader.result || '');
+        const audioBase64 = dataUrl.includes(',') ? dataUrl.slice(dataUrl.indexOf(',') + 1) : '';
+        if (!audioBase64) {
+          setState('idle');
+          statusLine.textContent = 'Could not prepare the recording. Please try again.';
+          return;
+        }
+        setState('idle');
+        statusLine.textContent = 'Sending audio to the local model on this device…';
+        postValue({ audioBase64, mimeType: blob.type || 'audio/webm', durationMs: Date.now() - startedAt });
+      };
+      reader.readAsDataURL(blob);
+    }
+
+    async function startRecording() {
+      if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+        statusLine.textContent = 'Audio recording is unavailable in this browser. Try Chrome or Edge, or type your message.';
+        return;
+      }
+      setState('starting');
+      statusLine.textContent = 'Waiting for microphone access…';
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        });
+        const formats = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
+        const mimeType = formats.find(format => MediaRecorder.isTypeSupported(format));
+        recorder = new MediaRecorder(micStream, mimeType ? { mimeType } : undefined);
+        chunks = [];
+        finishing = false;
+        startedAt = Date.now();
+        recorder.ondataavailable = event => {
+          if (event.data && event.data.size) chunks.push(event.data);
+        };
+        recorder.onerror = () => {
+          finishing = true;
+          releaseMic();
+          setState('idle');
+          statusLine.textContent = 'Recording hit a microphone error. Please try again.';
+        };
+        recorder.onstop = () => {
+          if (finishing) return;
+          finishing = true;
+          finishBlob(new Blob(chunks, { type: mimeType || 'audio/webm' }));
+        };
+        recorder.start(1000);
+        setState('recording');
+        statusLine.textContent = 'Recording · pauses are fine. Click Stop only when you’ve finished speaking.';
+        timer = window.setInterval(() => {
+          const seconds = Math.floor((Date.now() - startedAt) / 1000);
+          const minutes = String(Math.floor(seconds / 60)).padStart(2, '0');
+          const remainder = String(seconds % 60).padStart(2, '0');
+          statusLine.textContent = `Recording ${minutes}:${remainder} · pauses are fine. Click Stop when you’ve finished.`;
+        }, 500);
+      } catch (error) {
+        releaseMic();
+        setState('idle');
+        statusLine.textContent = error?.name === 'NotAllowedError'
+          ? 'Microphone access is blocked. Allow it for localhost in the browser, then try again.'
+          : 'Could not start recording. Check the microphone and browser permissions.';
+      }
+    }
+
+    function stopRecording() {
+      if (!recorder || recorder.state === 'inactive') return;
+      setState('stopping');
+      statusLine.textContent = 'Finishing the recording… your words will be transcribed locally.';
+      try { recorder.stop(); }
+      catch (error) {
+        finishing = true;
+        releaseMic();
+        setState('idle');
+        statusLine.textContent = 'Could not finish the recording. Please try again.';
+      }
+    }
+
+    button.addEventListener('click', () => {
+      if (recorder && recorder.state !== 'inactive') stopRecording();
+      else startRecording();
+    });
+    window.addEventListener('beforeunload', releaseMic);
+    if (document.readyState === 'complete') ready();
+    else window.addEventListener('load', ready, { once: true });
+  </script>
+</body>
+</html>
